@@ -32,6 +32,7 @@ Resumen: {resumen}
 """
     try:
         completion = client.chat.completions.create(
+            timeout=30,
             # Aquí está el modelo actualizado que reemplaza al antiguo
             model="openai/gpt-oss-20b",
             messages=[{"role": "user", "content": prompt}],
