@@ -32,7 +32,8 @@ Resumen: {resumen}
 """
     try:
         completion = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
+            # Aquí está el modelo actualizado que reemplaza al antiguo
+            model="openai/gpt-oss-20b",
             messages=[{"role": "user", "content": prompt}],
             temperature=0,
         )
@@ -52,6 +53,7 @@ def main():
         
         relevancia = analizar_con_groq(titular, resumen)
         
+        # Comprobamos si la respuesta contiene "ALTA"
         if "ALTA" in relevancia:
             mensaje = f"🚨 Noticia relevante para {MONEDA_OBJETIVO}:\n\n{titular}\n\n{entry.link}"
             enviar_telegram(mensaje)
