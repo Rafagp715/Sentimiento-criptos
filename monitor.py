@@ -10,7 +10,6 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 # Diccionario de monedas en Revolut X (Símbolo: Nombre completo)
-# Esto ayuda a que el filtro no falle si la IA lee "Bitcoin" en vez de "BTC"
 MONEDAS_REVOLUT_X = {
     "BTC": "BITCOIN", "ETH": "ETHEREUM", "SOL": "SOLANA", "XRP": "RIPPLE", 
     "ADA": "CARDANO", "DOT": "POLKADOT", "AVAX": "AVALANCHE", "LINK": "CHAINLINK", 
@@ -36,14 +35,16 @@ def enviar_telegram(mensaje):
         print(f"Error enviando a Telegram: {e}")
 
 def analizar_con_groq(titular, resumen):
-    # El prompt pide a la IA que devuelva un JSON estricto
+    # PROMPT ACTUALIZADO: Ahora pedimos tendencia y razón
     prompt = f"""
-Eres un analista de criptomonedas experto. Analiza la siguiente noticia.
-1. Extrae los SÍMBOLOS o NOMBRES de las criptomonedas que se mencionan explícitamente (ej: BTC, ETH, Solana).
-2. Determina la relevancia de la noticia para el precio de esas monedas (ALTA, MEDIA, BAJA).
+Eres un analista financiero experto en criptomonedas. Analiza la siguiente noticia.
+1. Extrae los SÍMBOLOS o NOMBRES de las criptomonedas que se mencionan explícitamente.
+2. Determina la relevancia de la noticia (ALTA, MEDIA, BAJA).
+3. Determina si la noticia hará que el precio SUB A (ALCISTA), BAJE (BAJISTA) o se mantenga igual (NEUTRAL).
+4. Da una razón muy breve (máximo 10 palabras) de tu decisión.
 
-Responde ÚNICAMENTE con un objeto JSON válido con esta estructura:
-{{"monedas": ["BTC", "ETH"], "relevancia": "ALTA"}}
+Responde ÚNICAMENTE con un objeto JSON válido con esta estructura exacta:
+{{"monedas": ["BTC", "ETH"], "relevancia": "ALTA", "tendencia": "ALCISTA", "razon": "Aprobación de ETF al contado"}}
 
 Si no se menciona ninguna moneda concreta, devuelve "monedas": [].
 
@@ -55,60 +56,73 @@ Resumen: {resumen}
             model="openai/gpt-oss-20b",
             messages=[{"role": "user", "content": prompt}],
             temperature=0,
-            timeout=30, # Si la IA tarda más de 30s, se cancela para no bloquear
+            timeout=30,
         )
         
         respuesta = completion.choices[0].message.content.strip()
         
-        # Limpiamos el formato Markdown que a veces añade la IA (```json ... ```)
+        # Limpiamos el formato Markdown que a veces añade la IA
         if respuesta.startswith("```json"):
             respuesta = respuesta[7:-3]
         elif respuesta.startswith("```"):
             respuesta = respuesta[3:-3]
         
         datos = json.loads(respuesta)
-        return datos.get("monedas", []), datos.get("relevancia", "BAJA").upper()
+        return (
+            datos.get("monedas", []), 
+            datos.get("relevancia", "BAJA").upper(),
+            datos.get("tendencia", "NEUTRAL").upper(),
+            datos.get("razon", "")
+        )
     
     except Exception as e:
         print(f"Error con Groq/JSON: {e}")
-        return [], "BAJA"
+        return [], "BAJA", "NEUTRAL", ""
 
 def main():
-    # Leer RSS de CoinDesk
     feed = feedparser.parse("https://www.coindesk.com/arc/outboundfeeds/rss/")
     
-    # Procesar solo las últimas 5 noticias
     for entry in feed.entries[:5]:
         titular = entry.title
         resumen = entry.get("summary", "")[:300]
         
-        monedas_detectadas, relevancia = analizar_con_groq(titular, resumen)
+        # Ahora recibimos 4 variables
+        monedas_detectadas, relevancia, tendencia, razon = analizar_con_groq(titular, resumen)
         
         # --- FILTRO DE REVOLUT X ---
         monedas_validas = []
         for moneda in monedas_detectadas:
             moneda_upper = moneda.upper().strip()
-            
-            # Comprobamos si la IA devolvió el símbolo (ej. "BTC") o el nombre completo (ej. "BITCOIN")
             if moneda_upper in MONEDAS_REVOLUT_X:
                 monedas_validas.append(moneda_upper)
             else:
-                # Si no está el símbolo, buscamos si coincide con algún nombre completo de nuestro diccionario
                 for simbolo, nombre in MONEDAS_REVOLUT_X.items():
                     if moneda_upper == nombre:
                         monedas_validas.append(simbolo)
                         break
         
-        # Si la relevancia es ALTA o MEDIA, y hay monedas que cotizan en Revolut X, avisamos
         if relevancia in ["ALTA", "MEDIA"] and monedas_validas:
-            # set() elimina duplicados si por ejemplo la IA detectó "BTC" y "Bitcoin" en la misma noticia
-            monedas_str = ", ".join(set(monedas_validas)) 
-            mensaje = f"🚨 Noticia {relevancia} para: {monedas_str}\n\n{titular}\n\n{entry.link}"
+            monedas_str = ", ".join(set(monedas_validas))
+            
+            # Añadimos iconos visuales según la tendencia para que sea muy fácil de leer en Telegram
+            icono = "⚖️"
+            if tendencia == "ALCISTA":
+                icono = "📈"
+            elif tendencia == "BAJISTA":
+                icono = "📉"
+
+            mensaje = (
+                f"{icono} <b>Tendencia: {tendencia}</b> ({relevancia})\n"
+                f"🪙 <b>Monedas:</b> {monedas_str}\n"
+                f"💡 <b>Motivo:</b> {razon}\n\n"
+                f"📰 {titular}\n\n"
+                f"🔗 {entry.link}"
+            )
+            
             enviar_telegram(mensaje)
-            print(f"Alerta enviada ({relevancia}) - Monedas Revolut X: {monedas_str} - {titular}")
+            print(f"Alerta enviada ({relevancia} / {tendencia}) - Monedas: {monedas_str} - {titular}")
         else:
-            # Log para revisar qué está pasando internamente
-            print(f"Descartada ({relevancia}) - IA detectó: {monedas_detectadas} - {titular}")
+            print(f"Descartada ({relevancia}) - Tendencia: {tendencia} - IA detectó: {monedas_detectadas} - {titular}")
 
 if __name__ == "__main__":
     main()
